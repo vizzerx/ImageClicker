@@ -62,7 +62,13 @@ except Exception:
     pytesseract = None
     HAS_OCR = False
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+# exe ที่ compile ด้วย PyInstaller (--onefile) จะรัน __file__ จากโฟลเดอร์ชั่วคราวที่แตกไฟล์
+# (sys._MEIPASS) ไม่ใช่โฟลเดอร์จริงของ .exe ต้องเช็ค sys.frozen ก่อน ไม่งั้นหา
+# default_preset.json / ไอคอน / โฟลเดอร์ results ที่วางคู่ .exe ไม่เจอ
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PRESET = os.path.join(APP_DIR, "default_preset.json")
 RESULTS_DIR = os.path.join(APP_DIR, "results")
 
@@ -213,7 +219,13 @@ class PillButton(tk.Canvas):
         self.bind("<Enter>", lambda e: self._draw(True))
         self.bind("<Leave>", lambda e: self._draw(False))
         self.bind("<Button-1>", self._on_click)
+        self.bind("<Configure>", self._on_configure)
         self._draw(False)
+
+    def _on_configure(self, e):
+        if e.width > 1 and e.height > 1 and (e.width != self._cw or e.height != self._ch):
+            self._cw, self._ch = e.width, e.height
+            self._draw(False)
 
     def _set_kind(self, kind):
         self.kind = kind
@@ -278,7 +290,13 @@ class Segmented(tk.Canvas):
         self.options, self.values, self.var = options, values, variable
         self.command, self._cw, self._ch, self.font = command, width, height, font
         self.bind("<Button-1>", self._click)
+        self.bind("<Configure>", self._on_configure)
         self.redraw()
+
+    def _on_configure(self, e):
+        if e.width > 1 and e.height > 1 and (e.width != self._cw or e.height != self._ch):
+            self._cw, self._ch = e.width, e.height
+            self.redraw()
 
     def _click(self, e):
         idx = 0 if e.x < self._cw/2 else 1
@@ -415,8 +433,23 @@ class App:
         self.root = root
         root.title("Image Clicker")
         root.configure(bg=BG)
-        root.geometry("1000x780")
-        root.minsize(940, 720)
+        root.geometry("1150x800")
+        root.minsize(1040, 740)
+
+        icon_png = os.path.join(APP_DIR, "app_icon.png")
+        if os.path.exists(icon_png):
+            try:
+                self._icon_img = tk.PhotoImage(file=icon_png)   # เก็บ reference กันโดนเก็บขยะ
+                root.iconphoto(True, self._icon_img)
+            except Exception:
+                pass
+        if sys.platform == "win32":
+            icon_ico = os.path.join(APP_DIR, "app_icon.ico")
+            if os.path.exists(icon_ico):
+                try:
+                    root.iconbitmap(icon_ico)
+                except Exception:
+                    pass
 
         # ฟอนต์สะอาดที่สุดที่มีในเครื่อง
         fams = set(tkfont.families(root))
@@ -495,13 +528,17 @@ class App:
                                     font=(self.ff, 13, "bold"), bg=BG)
         self.btn_start.pack(fill="x")
 
-        # ----- พื้นที่ 2 คอลัมน์ -----
+        # ----- พื้นที่ 2 คอลัมน์ (ซ้ายกว้างกว่าขวา) -----
         main = tk.Frame(self.root, bg=BG)
         main.pack(fill="both", expand=True)
+        main.grid_rowconfigure(0, weight=1)
+        main.grid_columnconfigure(0, weight=3)
+        main.grid_columnconfigure(1, weight=2)
+
         self.left_scroll = ScrollableFrame(main, bg=BG)
-        self.left_scroll.pack(side="left", fill="both", expand=True)
+        self.left_scroll.grid(row=0, column=0, sticky="nsew")
         left = self.left_scroll.inner
-        right = tk.Frame(main, bg=BG); right.pack(side="left", fill="both", expand=True)
+        right = tk.Frame(main, bg=BG); right.grid(row=0, column=1, sticky="nsew")
 
         # ===== คอลัมน์ซ้าย =====
         # ----- ขั้นตอน -----
@@ -625,6 +662,10 @@ class App:
             rtv.column(c, width=widths[c], anchor="center")
         rtv.pack(fill="both", expand=True)
         self.res_tv = rtv
+
+        self.lbl_totals = tk.Label(self.results_frame, text="รวม Coins: 0    รวม XP: 0",
+                                   bg=CARD, fg=TEXT, font=(self.ff, 10, "bold"))
+        self.lbl_totals.pack(anchor="w", padx=14, pady=(8, 0))
 
         rbtn = tk.Frame(self.results_frame, bg=CARD); rbtn.pack(fill="x", padx=14, pady=(6, 12))
         PillButton(rbtn, "ส่งออกตาราง", self.export_results, "secondary",
@@ -912,6 +953,12 @@ class App:
         self.res_tv.insert("", "end", values=(row["round"], row["time_start"], row["time_end"],
                                               row["elapsed"], row["coins"], row["xp"]))
         self.res_tv.see(self.res_tv.get_children()[-1])
+        self._update_totals()
+
+    def _update_totals(self):
+        coins_sum = sum(r["coins"] for r in self.results if isinstance(r["coins"], int))
+        xp_sum = sum(r["xp"] for r in self.results if isinstance(r["xp"], int))
+        self.lbl_totals.config(text=f"รวม Coins: {coins_sum:,}    รวม XP: {xp_sum:,}")
 
     def _init_results_csv(self):
         os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -984,6 +1031,7 @@ class App:
     def clear_results(self):
         self.results = []
         self.res_tv.delete(*self.res_tv.get_children())
+        self._update_totals()
 
     # ---------------- พรีเซ็ต ----------------
     def collect_preset(self):
@@ -1143,6 +1191,7 @@ class App:
         self.results_csv_path = None
         if self.cfg["save_results"]:
             self.res_tv.delete(*self.res_tv.get_children())
+            self._update_totals()
             self._init_results_csv()
             self.log(f"บันทึกผลลัพธ์ลงไฟล์: {self.results_csv_path}")
 

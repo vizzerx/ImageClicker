@@ -36,6 +36,7 @@ jobs:
           Copy-Item dist\image_clicker.exe release\
           Copy-Item default_preset.json release\
           Copy-Item "README_วิธีใช้.txt" release\
+          Copy-Item app_icon.png release\
           Compress-Archive -Path release\* -DestinationPath ImageClicker-windows.zip
 
       - name: Upload build artifact
