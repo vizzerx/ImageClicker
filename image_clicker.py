@@ -12,6 +12,8 @@ Image Clicker v3 - เฝ้าหน้าจอแล้วคลิกรู�
 """
 
 import os
+import re
+import csv
 import time
 import json
 import base64
@@ -49,8 +51,20 @@ try:
 except Exception:
     HAS_KEYBOARD = False
 
+try:
+    import pytesseract
+    HAS_OCR = True
+    if sys.platform == "win32":
+        _default_tesseract = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        if os.path.exists(_default_tesseract):
+            pytesseract.pytesseract.tesseract_cmd = _default_tesseract
+except Exception:
+    pytesseract = None
+    HAS_OCR = False
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PRESET = os.path.join(APP_DIR, "default_preset.json")
+RESULTS_DIR = os.path.join(APP_DIR, "results")
 
 # ---- จานสีสไตล์ Apple ----
 BG      = "#f5f5f7"
@@ -127,6 +141,28 @@ def grab_screen(region=None):
     except Exception:
         img = pyautogui.screenshot(region=region)
         return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+
+
+def ocr_digits(region, tesseract_path=None):
+    """OCR ตัวเลข (+เครื่องหมายจุลภาค) จากพื้นที่หน้าจอที่กำหนด คืน int หรือ None"""
+    if not HAS_OCR or not region:
+        return None
+    if tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
+    try:
+        img = grab_screen(region)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        cfg = "--psm 7 -c tessedit_char_whitelist=0123456789,"
+        for flag in (cv2.THRESH_BINARY, cv2.THRESH_BINARY_INV):
+            _, th = cv2.threshold(gray, 0, 255, flag + cv2.THRESH_OTSU)
+            text = pytesseract.image_to_string(th, config=cfg)
+            digits = re.sub(r"[^0-9]", "", text)
+            if digits:
+                return int(digits)
+        return None
+    except Exception:
+        return None
 
 
 def img_to_b64(img_bgr):
@@ -354,6 +390,14 @@ class App:
         self.recent_clicks = []
         self.cfg = {}
 
+        self.coins_region = None
+        self.xp_region = None
+        self.tesseract_path = ""
+        self.results = []
+        self.round_num = 0
+        self.round_start_time = None
+        self.results_csv_path = None
+
         self._setup_style()
         self._build_ui()
 
@@ -465,6 +509,7 @@ class App:
         self.var_step_timeout = tk.StringVar(value="")
         self.var_step_cd = tk.StringVar(value="")
         self.var_step_reqprev = tk.BooleanVar(value=False)
+        self.var_step_capture = tk.BooleanVar(value=False)
 
         def prop_row(label, var, lo, hi, inc, tooltip=""):
             r = tk.Frame(prop, bg=CARD); r.pack(fill="x", pady=1)
@@ -478,6 +523,9 @@ class App:
         tk.Checkbutton(prop, text="ทำต่อเมื่อขั้นก่อนหน้าสำเร็จ (ข้ามถ้าก่อนหน้าล้มเหลว)",
                        variable=self.var_step_reqprev, bg=CARD, fg=TEXT, font=(self.ff, 9),
                        activebackground=CARD, selectcolor=CARD).pack(anchor="w", pady=(4, 6))
+        tk.Checkbutton(prop, text="จับผลลัพธ์ (OCR Coins/XP) ตอนเจอขั้นนี้ — ใช้กับ 'บันทึกผลลัพธ์การเล่น'",
+                       variable=self.var_step_capture, bg=CARD, fg=TEXT, font=(self.ff, 9),
+                       activebackground=CARD, selectcolor=CARD).pack(anchor="w", pady=(0, 6))
         self.btn_apply_props = PillButton(prop, "บันทึกคุณสมบัติลงขั้นที่เลือก", self.apply_step_props,
                                           "secondary", width=230, height=30,
                                           font=(self.ff, 9, "bold"))
@@ -494,6 +542,53 @@ class App:
         tk.Checkbutton(c2, text="ทำซ้ำวนลูป (ครบทุกขั้นแล้วเริ่มใหม่)", variable=self.var_loop,
                        bg=CARD, fg=TEXT, font=(self.ff, 10), activebackground=CARD,
                        selectcolor=CARD).pack(anchor="w", padx=14, pady=(0, 12))
+
+        # ----- บันทึกผลลัพธ์การเล่น -----
+        c2b = make_card(left, "บันทึกผลลัพธ์การเล่น", self.ff)
+        self.var_save_results = tk.BooleanVar(value=False)
+        tk.Checkbutton(c2b, text="บันทึกผลลัพธ์การเล่น (OCR Coins/XP)", variable=self.var_save_results,
+                       command=self._toggle_results_section, bg=CARD, fg=TEXT, font=(self.ff, 10, "bold"),
+                       activebackground=CARD, selectcolor=CARD).pack(anchor="w", padx=14, pady=(8, 4))
+
+        self.results_frame = tk.Frame(c2b, bg=CARD)
+
+        if not HAS_OCR:
+            tk.Label(self.results_frame, text="ไม่พบไลบรารี pytesseract — ติดตั้งด้วย  pip install pytesseract\n"
+                     "และติดตั้งโปรแกรม Tesseract-OCR บนเครื่อง (ดู README)",
+                     bg=CARD, fg=DANGER, font=(self.ff, 9), justify="left").pack(anchor="w", padx=14, pady=(0, 6))
+
+        rg = tk.Frame(self.results_frame, bg=CARD); rg.pack(fill="x", padx=14, pady=(0, 2))
+        PillButton(rg, "เลือกพื้นที่ Coins", self.pick_coins_region, "secondary",
+                   width=140, height=32, font=(self.ff, 9, "bold")).pack(side="left")
+        self.lbl_coins_region = self._lbl(rg, "ยังไม่เลือก", fg=SUBTLE); self.lbl_coins_region.pack(side="left", padx=6)
+
+        rg2 = tk.Frame(self.results_frame, bg=CARD); rg2.pack(fill="x", padx=14, pady=(2, 6))
+        PillButton(rg2, "เลือกพื้นที่ XP", self.pick_xp_region, "secondary",
+                   width=140, height=32, font=(self.ff, 9, "bold")).pack(side="left")
+        self.lbl_xp_region = self._lbl(rg2, "ยังไม่เลือก", fg=SUBTLE); self.lbl_xp_region.pack(side="left", padx=6)
+
+        tk.Label(self.results_frame,
+                 text="ติ๊ก 'จับผลลัพธ์ (OCR Coins/XP)' ที่ขั้นซึ่งแสดงหน้าผลลัพธ์ ในช่อง\n"
+                      "'คุณสมบัติของขั้นที่เลือก' ด้านบน (ใช้ได้เฉพาะโหมด 'ตามลำดับ')",
+                 bg=CARD, fg=SUBTLE, font=(self.ff, 9), justify="left").pack(anchor="w", padx=14, pady=(0, 8))
+
+        tvbody = tk.Frame(self.results_frame, bg=CARD); tvbody.pack(fill="both", expand=True, padx=14)
+        cols = ("round", "start", "end", "elapsed", "coins", "xp")
+        rtv = ttk.Treeview(tvbody, style="A.Treeview", height=6, columns=cols, show="headings")
+        heads = {"round": "รอบ", "start": "เริ่ม", "end": "จบ", "elapsed": "ใช้เวลา(วิ)",
+                 "coins": "Coins", "xp": "XP"}
+        widths = {"round": 40, "start": 70, "end": 70, "elapsed": 70, "coins": 80, "xp": 60}
+        for c in cols:
+            rtv.heading(c, text=heads[c])
+            rtv.column(c, width=widths[c], anchor="center")
+        rtv.pack(fill="both", expand=True)
+        self.res_tv = rtv
+
+        rbtn = tk.Frame(self.results_frame, bg=CARD); rbtn.pack(fill="x", padx=14, pady=(6, 12))
+        PillButton(rbtn, "ส่งออกตาราง", self.export_results, "secondary",
+                   width=110, height=32, font=(self.ff, 9, "bold")).pack(side="left")
+        PillButton(rbtn, "ล้างตาราง", self.clear_results, "secondary",
+                   width=100, height=32, font=(self.ff, 9, "bold")).pack(side="left", padx=6)
 
         # ===== คอลัมน์ขวา =====
         # ----- ตั้งค่า -----
@@ -579,6 +674,8 @@ class App:
             tags.append(f"ไม่ซ้ำ {s['cooldown']}s")
         if s.get("require_prev"):
             tags.append("ต้องมีก่อนหน้า")
+        if s.get("capture_result"):
+            tags.append("บันทึกผล")
         return ", ".join(tags) if tags else "—"
 
     def refresh_list(self, keep=None):
@@ -604,6 +701,7 @@ class App:
         self.var_step_timeout.set("" if s.get("timeout") is None else str(s.get("timeout")))
         self.var_step_cd.set("" if s.get("cooldown") is None else str(s.get("cooldown")))
         self.var_step_reqprev.set(bool(s.get("require_prev", False)))
+        self.var_step_capture.set(bool(s.get("capture_result", False)))
 
     def _sel(self):
         s = self.tree.selection()
@@ -686,6 +784,7 @@ class App:
             "timeout": None,        # None = ใช้ค่ารวม (step_timeout)
             "cooldown": None,      # None = ใช้ค่ารวม (step_cd)
             "require_prev": False,
+            "capture_result": False,
         }
 
     def _parse_opt(self, var):
@@ -713,6 +812,7 @@ class App:
         self.steps[i]["timeout"] = self._parse_opt(self.var_step_timeout)
         self.steps[i]["cooldown"] = self._parse_opt(self.var_step_cd)
         self.steps[i]["require_prev"] = bool(self.var_step_reqprev.get())
+        self.steps[i]["capture_result"] = bool(self.var_step_capture.get())
         self.refresh_list(keep=i)
         self.log(f"บันทึกคุณสมบัติขั้น {i+1} แล้ว")
 
@@ -731,6 +831,116 @@ class App:
     def clear_region(self):
         self.region = None
         self.lbl_region.config(text="ทั้งจอ")
+
+    # ---------------- บันทึกผลลัพธ์การเล่น ----------------
+    def _toggle_results_section(self):
+        if self.var_save_results.get():
+            self.results_frame.pack(fill="both", expand=True)
+            if not HAS_OCR:
+                messagebox.showwarning("ไม่พบ OCR",
+                    "ยังไม่ได้ติดตั้ง pytesseract หรือโปรแกรม Tesseract-OCR\n"
+                    "ระบบจะบันทึกได้เฉพาะ Round/เวลา ส่วน Coins/XP จะว่าง")
+        else:
+            self.results_frame.pack_forget()
+
+    def pick_coins_region(self):
+        if pyautogui is None:
+            return
+        self.root.withdraw(); self.root.update(); time.sleep(0.3)
+        region = RegionSelector(self.root).select()
+        self.root.deiconify()
+        if region:
+            self.coins_region = region
+            l, t, w, h = region
+            self.lbl_coins_region.config(text=f"{w}x{h} ที่ ({l},{t})")
+
+    def pick_xp_region(self):
+        if pyautogui is None:
+            return
+        self.root.withdraw(); self.root.update(); time.sleep(0.3)
+        region = RegionSelector(self.root).select()
+        self.root.deiconify()
+        if region:
+            self.xp_region = region
+            l, t, w, h = region
+            self.lbl_xp_region.config(text=f"{w}x{h} ที่ ({l},{t})")
+
+    def _add_result_row(self, row):
+        self.res_tv.insert("", "end", values=(row["round"], row["time_start"], row["time_end"],
+                                              row["elapsed"], row["coins"], row["xp"]))
+        self.res_tv.see(self.res_tv.get_children()[-1])
+
+    def _init_results_csv(self):
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        fname = time.strftime("results_%Y%m%d_%H%M%S.csv")
+        self.results_csv_path = os.path.join(RESULTS_DIR, fname)
+        with open(self.results_csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            csv.writer(f).writerow(["Round", "Time start", "Time end", "Time elapsed (s)", "Coins", "XP"])
+
+    def _append_result_csv(self, row):
+        if not self.results_csv_path:
+            return
+        try:
+            with open(self.results_csv_path, "a", newline="", encoding="utf-8-sig") as f:
+                csv.writer(f).writerow([row["round"], row["time_start"], row["time_end"],
+                                        row["elapsed"], row["coins"], row["xp"]])
+        except Exception as e:
+            self.log(f"บันทึกไฟล์ผลลัพธ์ไม่สำเร็จ: {e}")
+
+    def _capture_result(self):
+        """เรียกตอน 'เจอ' ขั้นที่ตั้งจับผลลัพธ์ไว้ (ก่อนคลิก) — OCR Coins/XP แล้วบันทึก 1 แถว"""
+        t_end = time.time()
+        t_start = self.round_start_time or t_end
+        coins = ocr_digits(self.coins_region, self.tesseract_path)
+        xp = ocr_digits(self.xp_region, self.tesseract_path)
+        self.round_num += 1
+        row = {
+            "round": self.round_num,
+            "time_start": time.strftime("%H:%M:%S", time.localtime(t_start)),
+            "time_end": time.strftime("%H:%M:%S", time.localtime(t_end)),
+            "elapsed": round(t_end - t_start, 1),
+            "coins": coins if coins is not None else "",
+            "xp": xp if xp is not None else "",
+        }
+        self.results.append(row)
+        self.round_start_time = t_end
+        self.root.after(0, lambda: self._add_result_row(row))
+        self._append_result_csv(row)
+        self.log(f"บันทึกผล รอบ {row['round']}: Coins={row['coins']} XP={row['xp']} ({row['elapsed']}s)")
+
+    def export_results(self):
+        if not self.results:
+            messagebox.showwarning("ยังไม่มีข้อมูล", "ยังไม่มีผลลัพธ์ให้ส่งออก"); return
+        path = filedialog.asksaveasfilename(title="ส่งออกตารางผลลัพธ์", defaultextension=".csv",
+            initialfile="results.csv",
+            filetypes=[("CSV", "*.csv"), ("JSON", "*.json"), ("Text", "*.txt")])
+        if not path:
+            return
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext == ".json":
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(self.results, f, ensure_ascii=False, indent=2)
+            elif ext == ".txt":
+                with open(path, "w", encoding="utf-8") as f:
+                    for r in self.results:
+                        f.write(f"Round {r['round']}: {r['time_start']} -> {r['time_end']} "
+                                f"({r['elapsed']}s)  Coins={r['coins']}  XP={r['xp']}\n")
+            else:
+                with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                    w = csv.writer(f)
+                    w.writerow(["Round", "Time start", "Time end", "Time elapsed (s)", "Coins", "XP"])
+                    for r in self.results:
+                        w.writerow([r["round"], r["time_start"], r["time_end"], r["elapsed"],
+                                   r["coins"], r["xp"]])
+            self.log(f"ส่งออกผลลัพธ์: {path}")
+            messagebox.showinfo("สำเร็จ", "ส่งออกไฟล์แล้ว")
+        except Exception as e:
+            messagebox.showerror("ส่งออกไม่สำเร็จ", str(e))
+
+    def clear_results(self):
+        self.results = []
+        self.res_tv.delete(*self.res_tv.get_children())
 
     # ---------------- พรีเซ็ต ----------------
     def collect_preset(self):
@@ -752,6 +962,10 @@ class App:
                 "mode": self.var_mode.get(),
                 "loop": bool(self.var_loop.get()),
                 "region": list(self.region) if self.region else None,
+                "save_results": bool(self.var_save_results.get()),
+                "coins_region": list(self.coins_region) if self.coins_region else None,
+                "xp_region": list(self.xp_region) if self.xp_region else None,
+                "tesseract_path": self.tesseract_path,
             },
             "steps": [{"name": s["name"], "clicks": s["clicks"],
                        "flexible": bool(s.get("flexible")),
@@ -760,6 +974,7 @@ class App:
                        "timeout": s.get("timeout"),        # None = ใช้ค่ารวม
                        "cooldown": s.get("cooldown"),      # None = ใช้ค่ารวม
                        "require_prev": bool(s.get("require_prev", False)),
+                       "capture_result": bool(s.get("capture_result", False)),
                        "image_b64": img_to_b64(s["img"])} for s in self.steps],
         }
 
@@ -813,6 +1028,17 @@ class App:
             reg = st.get("region")
             self.region = tuple(reg) if reg else None
             self.lbl_region.config(text=(f"{reg[2]}x{reg[3]} ที่ ({reg[0]},{reg[1]})" if reg else "ทั้งจอ"))
+
+            self.var_save_results.set(st.get("save_results", False))
+            self._toggle_results_section()
+            creg = st.get("coins_region")
+            self.coins_region = tuple(creg) if creg else None
+            self.lbl_coins_region.config(text=(f"{creg[2]}x{creg[3]} ที่ ({creg[0]},{creg[1]})" if creg else "ยังไม่เลือก"))
+            xreg = st.get("xp_region")
+            self.xp_region = tuple(xreg) if xreg else None
+            self.lbl_xp_region.config(text=(f"{xreg[2]}x{xreg[3]} ที่ ({xreg[0]},{xreg[1]})" if xreg else "ยังไม่เลือก"))
+            self.tesseract_path = st.get("tesseract_path", "")
+
             self.steps = []
             for s in data.get("steps", []):
                 img = b64_to_img(s["image_b64"])
@@ -826,6 +1052,7 @@ class App:
                         "timeout": s.get("timeout"),            # None = ใช้ค่ารวม
                         "cooldown": s.get("cooldown"),          # None = ใช้ค่ารวม
                         "require_prev": bool(s.get("require_prev", False)),
+                        "capture_result": bool(s.get("capture_result", False)),
                         "img": img,
                     })
             self.refresh_list()
@@ -861,10 +1088,21 @@ class App:
             "loop": bool(self.var_loop.get()),
             "region": self.region,
             "steps": [dict(s) for s in self.steps],
+            "save_results": bool(self.var_save_results.get()),
         }
         self.running = True
         self.recent_clicks = []
         self.last_done = {}   # step_index -> time.time() เมื่อสำเร็จครั้งล่าสุด (ใช้ cooldown)
+
+        self.results = []
+        self.round_num = 0
+        self.round_start_time = time.time()
+        self.results_csv_path = None
+        if self.cfg["save_results"]:
+            self.res_tv.delete(*self.res_tv.get_children())
+            self._init_results_csv()
+            self.log(f"บันทึกผลลัพธ์ลงไฟล์: {self.results_csv_path}")
+
         self.btn_start.set_state(text="หยุด  (F8)", kind="danger")
         self.log(f"=== เริ่มทำงาน (โหมด: {'ตามลำดับ' if self.cfg['mode']=='sequence' else 'สแกนทั้งหมด'}) ===")
         self.worker = threading.Thread(target=self._loop, daemon=True)
@@ -967,6 +1205,8 @@ class App:
             while self.running:
                 m = find_matches(grab_screen(c["region"]), step["img"], c["conf"], c["scales"])
                 if m:
+                    if step.get("capture_result") and c.get("save_results"):
+                        self._capture_result()
                     x, y = self._target_point(m[0], offx, offy)
                     self._do_click(x, y, step["clicks"])
                     self.log(f"ขั้น {num+1} คลิกที่ ({x},{y}) x{step['clicks']}")
@@ -1000,6 +1240,8 @@ class App:
             for k in list(pending):     # ไล่ตามความสำคัญ คลิกตัวแรกที่เจอ
                 m = find_matches(grab_screen(c["region"]), steps[k]["img"], c["conf"], c["scales"])
                 if m:
+                    if steps[k].get("capture_result") and c.get("save_results"):
+                        self._capture_result()
                     x, y = self._target_point(m[0], offx, offy)
                     self._do_click(x, y, steps[k]["clicks"])
                     gap = self._step_val(steps[k], "gap", c["gap"])   # หน่วงตามขั้นนั้น
