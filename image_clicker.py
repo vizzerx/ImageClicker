@@ -433,23 +433,26 @@ class App:
         self.root = root
         root.title("Image Clicker")
         root.configure(bg=BG)
-        root.geometry("1150x800")
-        root.minsize(1040, 740)
+        root.geometry("980x980")
+        root.minsize(700, 600)
 
+        icon_ico = os.path.join(APP_DIR, "app_icon.ico")
         icon_png = os.path.join(APP_DIR, "app_icon.png")
-        if os.path.exists(icon_png):
+        icon_set = False
+        if sys.platform == "win32" and os.path.exists(icon_ico):
+            # .ico ผ่าน Win32 GDI ตรง ๆ เชื่อถือได้กว่า iconphoto (ไม่ต้องพึ่งว่า Tk เวอร์ชันนั้นรองรับ PNG ไหม)
+            # default=... ทำให้ Toplevel ที่เปิดต่อ (เช่นตอนลากเลือกพื้นที่) ได้ไอคอนเดียวกันด้วย
+            try:
+                root.iconbitmap(default=icon_ico)
+                icon_set = True
+            except Exception:
+                pass
+        if not icon_set and os.path.exists(icon_png):
             try:
                 self._icon_img = tk.PhotoImage(file=icon_png)   # เก็บ reference กันโดนเก็บขยะ
                 root.iconphoto(True, self._icon_img)
             except Exception:
                 pass
-        if sys.platform == "win32":
-            icon_ico = os.path.join(APP_DIR, "app_icon.ico")
-            if os.path.exists(icon_ico):
-                try:
-                    root.iconbitmap(icon_ico)
-                except Exception:
-                    pass
 
         # ฟอนต์สะอาดที่สุดที่มีในเครื่อง
         fams = set(tkfont.families(root))
