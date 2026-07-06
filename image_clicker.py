@@ -367,6 +367,46 @@ class RegionSelector:
         return self.result
 
 
+class ScrollableFrame(tk.Frame):
+    """คอลัมน์ที่เลื่อน (scroll) แนวตั้งได้ — ใช้เมื่อการ์ดข้างในรวมกันสูงเกินหน้าต่าง"""
+    def __init__(self, parent, bg=BG):
+        super().__init__(parent, bg=bg)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vsb.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        self.inner = tk.Frame(self.canvas, bg=bg)
+        self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+
+        self.inner.bind("<Configure>", self._on_inner_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        self.canvas.bind("<Enter>", self._bind_wheel)
+        self.canvas.bind("<Leave>", self._unbind_wheel)
+
+    def _on_inner_configure(self, _e=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas_configure(self, e):
+        self.canvas.itemconfig(self._win, width=e.width)
+
+    def _bind_wheel(self, _e=None):
+        self.canvas.bind_all("<MouseWheel>", self._on_wheel)
+        self.canvas.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
+        self.canvas.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
+
+    def _unbind_wheel(self, _e=None):
+        self.canvas.unbind_all("<MouseWheel>")
+        self.canvas.unbind_all("<Button-4>")
+        self.canvas.unbind_all("<Button-5>")
+
+    def _on_wheel(self, e):
+        # Windows: delta เป็นทวีคูณของ 120 / macOS: delta เป็นเลขน้อย ๆ
+        step = int(-e.delta / 120) if abs(e.delta) >= 120 else int(-e.delta)
+        self.canvas.yview_scroll(step, "units")
+
+
 # ----------------------------------------------------------------------
 # โปรแกรมหลัก
 # ----------------------------------------------------------------------
@@ -458,7 +498,9 @@ class App:
         # ----- พื้นที่ 2 คอลัมน์ -----
         main = tk.Frame(self.root, bg=BG)
         main.pack(fill="both", expand=True)
-        left = tk.Frame(main, bg=BG);  left.pack(side="left", fill="both", expand=True)
+        self.left_scroll = ScrollableFrame(main, bg=BG)
+        self.left_scroll.pack(side="left", fill="both", expand=True)
+        left = self.left_scroll.inner
         right = tk.Frame(main, bg=BG); right.pack(side="left", fill="both", expand=True)
 
         # ===== คอลัมน์ซ้าย =====
@@ -836,6 +878,7 @@ class App:
     def _toggle_results_section(self):
         if self.var_save_results.get():
             self.results_frame.pack(fill="both", expand=True)
+            self.root.after(50, lambda: self.left_scroll.canvas.yview_moveto(1.0))
             if not HAS_OCR:
                 messagebox.showwarning("ไม่พบ OCR",
                     "ยังไม่ได้ติดตั้ง pytesseract หรือโปรแกรม Tesseract-OCR\n"
