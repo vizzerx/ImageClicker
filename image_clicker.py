@@ -19,6 +19,7 @@ import json
 import base64
 import random
 import threading
+from datetime import datetime, timedelta
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox, simpledialog
@@ -62,6 +63,13 @@ except Exception:
     pytesseract = None
     HAS_OCR = False
 
+try:
+    import requests
+    HAS_REQUESTS = True
+except Exception:
+    requests = None
+    HAS_REQUESTS = False
+
 # exe ที่ compile ด้วย PyInstaller (--onefile) จะรัน __file__ จากโฟลเดอร์ชั่วคราวที่แตกไฟล์
 # (sys._MEIPASS) ไม่ใช่โฟลเดอร์จริงของ .exe ต้องเช็ค sys.frozen ก่อน ไม่งั้นหา
 # default_preset.json / ไอคอน / โฟลเดอร์ results ที่วางคู่ .exe ไม่เจอ
@@ -71,6 +79,9 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PRESET = os.path.join(APP_DIR, "default_preset.json")
 RESULTS_DIR = os.path.join(APP_DIR, "results")
+# ไฟล์เก็บ token/chat id ของ Telegram แยกจาก default_preset.json โดยเจตนา
+# (preset จะแชร์/แจกจ่ายได้ ห้ามมี secret หลุดไปด้วย) ต้องอยู่ใน .gitignore เสมอ
+BOT_CONFIG_PATH = os.path.join(APP_DIR, "bot_config.json")
 
 # ---- จานสีสไตล์ Apple ----
 BG      = "#f5f5f7"
@@ -195,6 +206,76 @@ def build_groups(flex_flags):
             groups.append(("strict", [i]))
             i += 1
     return groups
+
+
+# ----------------------------------------------------------------------
+# หยุดอัตโนมัติ / ตัวช่วยคำนวณ / รายงาน Telegram — ฟังก์ชันล้วน (pure)
+# ไม่พึ่ง self/Tkinter จึงทดสอบได้ตรง ๆ ด้วย pytest (ดู tests/test_pure_helpers.py)
+# ----------------------------------------------------------------------
+def compute_stop_at_from_duration(now_ts: float, hours: float) -> float:
+    """คืน epoch timestamp ที่จะหยุด เมื่อผู้ใช้ระบุ 'ระยะเวลา' เป็นชั่วโมง (ทศนิยมได้)"""
+    if hours <= 0:
+        raise ValueError("จำนวนชั่วโมงต้องมากกว่า 0")
+    return now_ts + hours * 3600.0
+
+
+def compute_stop_at_from_clock(now_ts: float, hour: int, minute: int) -> float:
+    """คืน epoch timestamp ของเวลานาฬิกา HH:MM ที่จะถึงถัดไป
+    (วันนี้ถ้ายังไม่ถึง ไม่งั้นเลื่อนไปพรุ่งนี้)"""
+    now_dt = datetime.fromtimestamp(now_ts)
+    candidate = now_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now_dt:
+        candidate += timedelta(days=1)
+    return candidate.timestamp()
+
+
+def parse_hhmm(text: str) -> tuple[int, int]:
+    """แปลงข้อความ 'HH:MM' เป็น (hour, minute) โยน ValueError ถ้ารูปแบบผิด"""
+    m = re.fullmatch(r"\s*([01]?\d|2[0-3]):([0-5]\d)\s*", text or "")
+    if not m:
+        raise ValueError("รูปแบบเวลาต้องเป็น HH:MM เช่น 22:30")
+    return int(m.group(1)), int(m.group(2))
+
+
+def format_remaining(seconds_left: float) -> tuple[int, int]:
+    """แปลงวินาทีที่เหลือเป็น (ชั่วโมง, นาที) ปัดเศษวินาทีขึ้น ไม่ติดลบ"""
+    seconds_left = max(0, int(seconds_left + 0.999))
+    h, rem = divmod(seconds_left, 3600)
+    return h, rem // 60
+
+
+def compute_avg_round_seconds(results: list) -> float | None:
+    """เฉลี่ย elapsed (วินาที) ของทุกรอบที่บันทึกไว้ คืน None ถ้ายังไม่มีข้อมูล"""
+    elapsed_vals = [r["elapsed"] for r in results if isinstance(r.get("elapsed"), (int, float))]
+    if not elapsed_vals:
+        return None
+    return sum(elapsed_vals) / len(elapsed_vals)
+
+
+def compute_hearts_estimate(avg_seconds: float, hearts: int) -> float:
+    """เวลารวมที่คาดว่าจะใช้ (วินาที) = ค่าเฉลี่ยต่อรอบ x จำนวนหัวใจ"""
+    if avg_seconds < 0 or hearts < 0:
+        raise ValueError("ค่าต้องไม่ติดลบ")
+    return avg_seconds * hearts
+
+
+def sum_results(results: list) -> tuple[int, int]:
+    """รวม Coins/XP จากรายการผลลัพธ์ (ข้าม field ที่ไม่ใช่ int เช่น OCR อ่านไม่ออก = '')"""
+    coins_sum = sum(r["coins"] for r in results if isinstance(r["coins"], int))
+    xp_sum = sum(r["xp"] for r in results if isinstance(r["xp"], int))
+    return coins_sum, xp_sum
+
+
+def format_telegram_report(coins_sum: int, xp_sum: int, round_num: int) -> str:
+    """สร้างข้อความรายงานภาษาไทยสำหรับส่งเข้า Telegram"""
+    return (f"รายงานผลการเล่น\n"
+            f"รอบที่เล่นแล้ว: {round_num}\n"
+            f"รวม Coins: {coins_sum:,}\n"
+            f"รวม XP: {xp_sum:,}")
+
+
+def build_telegram_url(token: str) -> str:
+    return f"https://api.telegram.org/bot{token}/sendMessage"
 
 
 # ----------------------------------------------------------------------
@@ -474,8 +555,15 @@ class App:
         self.round_start_time = None
         self.results_csv_path = None
 
+        self.stop_at = None            # epoch timestamp ที่จะหยุดอัตโนมัติ (None = ปิด)
+        self.auto_stop_job = None      # after() id ของ tick นับถอยหลัง
+
+        self._telegram_thread = None
+        self._telegram_stop_flag = None
+
         self._setup_style()
         self._build_ui()
+        self.load_bot_config()
 
         if pyautogui is None:
             messagebox.showerror("ใช้งานไม่ได้",
@@ -625,6 +713,36 @@ class App:
                        bg=CARD, fg=TEXT, font=(self.ff, 10), activebackground=CARD,
                        selectcolor=CARD).pack(anchor="w", padx=14, pady=(0, 12))
 
+        # ----- หยุดทำงานอัตโนมัติ -----
+        c2c = make_card(left, "หยุดทำงานอัตโนมัติ", self.ff)
+        self.var_stop_enabled = tk.BooleanVar(value=False)
+        tk.Checkbutton(c2c, text="เปิดใช้งานหยุดอัตโนมัติ", variable=self.var_stop_enabled,
+                       bg=CARD, fg=TEXT, font=(self.ff, 10, "bold"), activebackground=CARD,
+                       selectcolor=CARD).pack(anchor="w", padx=14, pady=(8, 4))
+
+        self.var_stop_mode = tk.StringVar(value="duration")
+        smbox = tk.Frame(c2c, bg=CARD); smbox.pack(fill="x", padx=14, pady=(0, 6))
+        Segmented(smbox, ["ตามระยะเวลา", "ตามเวลานาฬิกา"], ["duration", "clock"],
+                  self.var_stop_mode, width=350, font=(self.ff, 9, "bold")).pack(fill="x")
+
+        self.var_stop_duration = tk.DoubleVar(value=1.0)
+        sdr = tk.Frame(c2c, bg=CARD); sdr.pack(fill="x", padx=14, pady=2)
+        self._lbl(sdr, "ระยะเวลา (ชั่วโมง)", anchor="w").pack(side="left")
+        ttk.Spinbox(sdr, from_=0.1, to=24, increment=0.1, textvariable=self.var_stop_duration,
+                    width=8, style="A.TSpinbox").pack(side="right")
+
+        self.var_stop_clock = tk.StringVar(value="")
+        scr = tk.Frame(c2c, bg=CARD); scr.pack(fill="x", padx=14, pady=(2, 8))
+        self._lbl(scr, "เวลานาฬิกา (HH:MM)", anchor="w").pack(side="left")
+        tk.Entry(scr, textvariable=self.var_stop_clock, width=8, justify="center").pack(side="right")
+
+        PillButton(c2c, "คำนวณจากค่าเฉลี่ย...", self.open_stop_calculator, "secondary",
+                   width=190, height=32, font=(self.ff, 9, "bold")).pack(anchor="w", padx=14, pady=(0, 8))
+
+        self.lbl_stop_countdown = tk.Label(c2c, text="", bg=CARD, fg=ACCENT,
+                                           font=(self.ff, 9, "bold"), justify="left")
+        self.lbl_stop_countdown.pack(anchor="w", padx=14, pady=(0, 12))
+
         # ----- บันทึกผลลัพธ์การเล่น -----
         c2b = make_card(left, "บันทึกผลลัพธ์การเล่น", self.ff)
         self.var_save_results = tk.BooleanVar(value=False)
@@ -675,6 +793,44 @@ class App:
                    width=110, height=32, font=(self.ff, 9, "bold")).pack(side="left")
         PillButton(rbtn, "ล้างตาราง", self.clear_results, "secondary",
                    width=100, height=32, font=(self.ff, 9, "bold")).pack(side="left", padx=6)
+
+        # ----- แจ้งเตือนผ่าน Telegram -----
+        c2d = make_card(left, "แจ้งเตือนผ่าน Telegram", self.ff)
+        self.var_bot_enabled = tk.BooleanVar(value=False)
+        tk.Checkbutton(c2d, text="เปิดใช้งานแจ้งเตือน Telegram", variable=self.var_bot_enabled,
+                       command=self.save_bot_config, bg=CARD, fg=TEXT, font=(self.ff, 10, "bold"),
+                       activebackground=CARD, selectcolor=CARD).pack(anchor="w", padx=14, pady=(8, 4))
+
+        if not HAS_REQUESTS:
+            tk.Label(c2d, text="ไม่พบไลบรารี requests — ติดตั้งด้วย  pip install requests",
+                     bg=CARD, fg=DANGER, font=(self.ff, 9), justify="left").pack(anchor="w", padx=14, pady=(0, 6))
+
+        self.var_bot_token = tk.StringVar(value="")
+        btr = tk.Frame(c2d, bg=CARD); btr.pack(fill="x", padx=14, pady=2)
+        self._lbl(btr, "Bot Token", anchor="w").pack(side="left")
+        e_token = tk.Entry(btr, textvariable=self.var_bot_token, width=22, show="*")
+        e_token.pack(side="right")
+        e_token.bind("<FocusOut>", lambda e: self.save_bot_config())
+
+        self.var_bot_chat_id = tk.StringVar(value="")
+        bcr = tk.Frame(c2d, bg=CARD); bcr.pack(fill="x", padx=14, pady=2)
+        self._lbl(bcr, "Chat ID", anchor="w").pack(side="left")
+        e_chat = tk.Entry(bcr, textvariable=self.var_bot_chat_id, width=22)
+        e_chat.pack(side="right")
+        e_chat.bind("<FocusOut>", lambda e: self.save_bot_config())
+
+        self.var_bot_interval = tk.IntVar(value=30)
+        bir = tk.Frame(c2d, bg=CARD); bir.pack(fill="x", padx=14, pady=(2, 8))
+        self._lbl(bir, "รายงานทุกกี่นาที", anchor="w").pack(side="left")
+        ttk.Spinbox(bir, from_=1, to=1440, increment=1, textvariable=self.var_bot_interval,
+                    width=8, style="A.TSpinbox",
+                    command=self.save_bot_config).pack(side="right")
+
+        PillButton(c2d, "ทดสอบส่งข้อความ", self.test_send_telegram, "secondary",
+                   width=150, height=32, font=(self.ff, 9, "bold")).pack(anchor="w", padx=14, pady=(0, 6))
+        self.lbl_bot_status = tk.Label(c2d, text="", bg=CARD, fg=SUBTLE,
+                                       font=(self.ff, 9), justify="left")
+        self.lbl_bot_status.pack(anchor="w", padx=14, pady=(0, 12))
 
         # ===== คอลัมน์ขวา =====
         # ----- ตั้งค่า -----
@@ -959,8 +1115,7 @@ class App:
         self._update_totals()
 
     def _update_totals(self):
-        coins_sum = sum(r["coins"] for r in self.results if isinstance(r["coins"], int))
-        xp_sum = sum(r["xp"] for r in self.results if isinstance(r["xp"], int))
+        coins_sum, xp_sum = sum_results(self.results)
         self.lbl_totals.config(text=f"รวม Coins: {coins_sum:,}    รวม XP: {xp_sum:,}")
 
     def _init_results_csv(self):
@@ -1035,6 +1190,83 @@ class App:
         self.results = []
         self.res_tv.delete(*self.res_tv.get_children())
         self._update_totals()
+
+    # ---------------- หยุดอัตโนมัติ ----------------
+    def _tick_auto_stop(self):
+        if not self.running or self.stop_at is None:
+            return
+        remaining = self.stop_at - time.time()
+        if remaining <= 0:
+            self.lbl_stop_countdown.config(text="")
+            self.log("=== หยุดอัตโนมัติ (ครบเวลาที่ตั้งไว้) ===")
+            self.stop()
+            return
+        h, m = format_remaining(remaining)
+        stop_clock_str = time.strftime("%H:%M", time.localtime(self.stop_at))
+        self.lbl_stop_countdown.config(
+            text=f"จะหยุดทำงานในอีก {h} ชม {m} นาที (เวลา {stop_clock_str})")
+        self.auto_stop_job = self.root.after(30_000, self._tick_auto_stop)
+
+    # ---------------- ตัวช่วยคำนวณเวลาหยุด ----------------
+    def open_stop_calculator(self):
+        top = tk.Toplevel(self.root)
+        top.title("คำนวณเวลาหยุด")
+        top.configure(bg=BG)
+        top.resizable(False, False)
+        top.transient(self.root)
+
+        avg = compute_avg_round_seconds(self.results)
+        var_avg = tk.DoubleVar(value=round(avg, 1) if avg is not None else 0.0)
+        var_hearts = tk.IntVar(value=1)
+
+        body = tk.Frame(top, bg=BG); body.pack(padx=18, pady=16)
+        r1 = tk.Frame(body, bg=BG); r1.pack(fill="x", pady=4)
+        tk.Label(r1, text="ค่าเฉลี่ยต่อรอบ (วินาที)", bg=BG, fg=TEXT,
+                 font=(self.ff, 10), anchor="w").pack(side="left")
+        ttk.Spinbox(r1, from_=0, to=99999, increment=1, textvariable=var_avg,
+                    width=10, style="A.TSpinbox").pack(side="right")
+
+        r2 = tk.Frame(body, bg=BG); r2.pack(fill="x", pady=4)
+        tk.Label(r2, text="จำนวนหัวใจ", bg=BG, fg=TEXT,
+                 font=(self.ff, 10), anchor="w").pack(side="left")
+        ttk.Spinbox(r2, from_=0, to=9999, increment=1, textvariable=var_hearts,
+                    width=10, style="A.TSpinbox").pack(side="right")
+
+        lbl_result = tk.Label(body, text="", bg=BG, fg=TEXT,
+                              font=(self.ff, 11, "bold"), justify="left")
+        lbl_result.pack(fill="x", pady=(10, 12))
+
+        state = {"total_seconds": None}
+
+        def recompute(*_):
+            try:
+                total_seconds = compute_hearts_estimate(float(var_avg.get()), int(var_hearts.get()))
+            except (ValueError, tk.TclError):
+                lbl_result.config(text="ค่าต้องไม่ติดลบ")
+                state["total_seconds"] = None
+                return
+            h, m = format_remaining(total_seconds)
+            end_clock = time.strftime("%H:%M", time.localtime(time.time() + total_seconds))
+            lbl_result.config(text=f"รวม {h} ชม {m} นาที\nจบประมาณเวลา {end_clock}")
+            state["total_seconds"] = total_seconds
+
+        def use_this():
+            recompute()
+            if state["total_seconds"] is None:
+                return
+            self.var_stop_mode.set("duration")
+            self.var_stop_duration.set(round(state["total_seconds"] / 3600.0, 3))
+            top.destroy()
+
+        var_avg.trace_add("write", recompute)
+        var_hearts.trace_add("write", recompute)
+
+        PillButton(body, "ใช้ค่านี้ตั้งเวลาหยุด", use_this, "primary",
+                  width=220, height=36, font=(self.ff, 10, "bold"), bg=BG).pack(fill="x")
+
+        recompute()
+        top.grab_set()
+        self.root.wait_window(top)
 
     # ---------------- พรีเซ็ต ----------------
     def collect_preset(self):
@@ -1156,6 +1388,94 @@ class App:
             if not silent:
                 messagebox.showerror("เปิดไม่สำเร็จ", str(e))
 
+    # ---------------- Telegram ----------------
+    def load_bot_config(self):
+        if not os.path.exists(BOT_CONFIG_PATH):
+            return
+        try:
+            with open(BOT_CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.var_bot_enabled.set(data.get("enabled", False))
+            self.var_bot_token.set(data.get("token", ""))
+            self.var_bot_chat_id.set(data.get("chat_id", ""))
+            self.var_bot_interval.set(data.get("interval_min", 30))
+        except Exception as e:
+            self.log(f"โหลดค่า Telegram ไม่สำเร็จ: {e}")
+
+    def save_bot_config(self):
+        data = {
+            "enabled": bool(self.var_bot_enabled.get()),
+            "token": self.var_bot_token.get(),
+            "chat_id": self.var_bot_chat_id.get(),
+            "interval_min": int(self.var_bot_interval.get()),
+        }
+        try:
+            with open(BOT_CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.log(f"บันทึกค่า Telegram ไม่สำเร็จ: {e}")
+
+    def _send_telegram_message(self, text):
+        """เรียกจาก background thread เท่านั้น (ไม่บล็อก UI thread) คืน (สำเร็จหรือไม่, ข้อความ)"""
+        token = self.var_bot_token.get().strip()
+        chat_id = self.var_bot_chat_id.get().strip()
+        if not token or not chat_id:
+            return False, "ยังไม่ได้ตั้งค่า Token หรือ Chat ID"
+        try:
+            resp = requests.post(build_telegram_url(token),
+                                 json={"chat_id": chat_id, "text": text},
+                                 timeout=10)
+            if resp.ok:
+                return True, "ส่งสำเร็จ"
+            return False, f"ส่งไม่สำเร็จ (HTTP {resp.status_code})"
+        except requests.RequestException as e:
+            return False, f"ส่งไม่สำเร็จ: {e}"
+
+    def test_send_telegram(self):
+        if not HAS_REQUESTS:
+            messagebox.showerror("ใช้งานไม่ได้", "ติดตั้งไลบรารี requests ก่อน"); return
+        self.save_bot_config()
+
+        def worker():
+            ok, msg = self._send_telegram_message("ทดสอบการเชื่อมต่อจาก Image Clicker")
+            self.root.after(0, lambda: self.lbl_bot_status.config(
+                text=msg, fg=(GREEN if ok else DANGER)))
+            self.root.after(0, lambda: self.log(f"Telegram ทดสอบ: {msg}"))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _start_telegram_sender(self):
+        if not HAS_REQUESTS or not self.var_bot_enabled.get():
+            return
+        if self._telegram_thread is not None and self._telegram_thread.is_alive():
+            return
+        self._telegram_stop_flag = threading.Event()
+        self._telegram_thread = threading.Thread(target=self._telegram_loop, daemon=True)
+        self._telegram_thread.start()
+
+    def _stop_telegram_sender(self):
+        if self._telegram_stop_flag is not None:
+            self._telegram_stop_flag.set()
+
+    def _telegram_loop(self):
+        stop_flag = self._telegram_stop_flag
+        while self.running and not stop_flag.is_set():
+            interval_s = max(60, int(self.var_bot_interval.get()) * 60)
+            waited = 0
+            while waited < interval_s:
+                if not self.running or stop_flag.is_set():
+                    return
+                time.sleep(min(5, interval_s - waited))
+                waited += 5
+            if not self.running or stop_flag.is_set():
+                return
+            coins_sum, xp_sum = sum_results(list(self.results))
+            text = format_telegram_report(coins_sum, xp_sum, self.round_num)
+            ok, msg = self._send_telegram_message(text)
+            self.root.after(0, lambda ok=ok, msg=msg: self.lbl_bot_status.config(
+                text=msg, fg=(GREEN if ok else DANGER)))
+            if not ok:
+                self.root.after(0, lambda msg=msg: self.log(f"Telegram ส่งไม่สำเร็จ: {msg}"))
+
     # ---------------- เริ่ม/หยุด ----------------
     def toggle(self):
         self.stop() if self.running else self.start()
@@ -1165,6 +1485,21 @@ class App:
             return
         if not self.steps:
             messagebox.showwarning("ยังไม่มีขั้นตอน", "เพิ่มอย่างน้อย 1 ขั้นก่อน"); return
+
+        self.stop_at = None
+        if self.var_stop_enabled.get():
+            now = time.time()
+            try:
+                if self.var_stop_mode.get() == "duration":
+                    hours = float(self.var_stop_duration.get())
+                    self.stop_at = compute_stop_at_from_duration(now, hours)
+                else:
+                    hh, mm = parse_hhmm(self.var_stop_clock.get())
+                    self.stop_at = compute_stop_at_from_clock(now, hh, mm)
+            except (ValueError, tk.TclError) as e:
+                messagebox.showerror("เวลาไม่ถูกต้อง", str(e))
+                return
+
         self.cfg = {
             "conf": float(self.var_conf.get()),
             "scan": float(self.var_scan.get()),
@@ -1203,8 +1538,17 @@ class App:
         self.worker = threading.Thread(target=self._loop, daemon=True)
         self.worker.start()
 
+        if self.stop_at is not None:
+            self._tick_auto_stop()
+        if self.var_bot_enabled.get():
+            self._start_telegram_sender()
+
     def stop(self):
         self.running = False
+        if self.auto_stop_job is not None:
+            self.root.after_cancel(self.auto_stop_job)
+            self.auto_stop_job = None
+        self._stop_telegram_sender()
         self.btn_start.set_state(text="เริ่มทำงาน  (F8)", kind="primary")
         self.log("=== หยุดทำงาน ===")
 
