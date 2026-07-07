@@ -13,6 +13,13 @@ import re
 import sys
 import subprocess
 
+# Windows console เปิด stdout เป็น codepage เก่า (เช่น cp1252) ตามค่าเริ่มต้น
+# ซึ่ง encode ข้อความไทยไม่ได้ ต้องบังคับเป็น UTF-8 ก่อน print ข้อความไทยด้านล่าง
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 OUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "version_info.txt")
 
 FILE_DESCRIPTION = "Automate click your things"
