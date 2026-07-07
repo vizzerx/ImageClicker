@@ -172,5 +172,26 @@ def test_format_telegram_report_shape():
     )
 
 
+def test_format_telegram_report_without_prefix_unchanged():
+    text = format_telegram_report(1234, 56, 7, prefix="")
+    assert text == (
+        "รายงานผลการเล่น\n"
+        "รอบที่เล่นแล้ว: 7\n"
+        "รวม Coins: 1,234\n"
+        "รวม XP: 56"
+    )
+
+
+def test_format_telegram_report_with_prefix_prepends_line():
+    text = format_telegram_report(1234, 56, 7, prefix="HOST-01")
+    assert text == (
+        "HOST-01\n"
+        "รายงานผลการเล่น\n"
+        "รอบที่เล่นแล้ว: 7\n"
+        "รวม Coins: 1,234\n"
+        "รวม XP: 56"
+    )
+
+
 def test_build_telegram_url():
     assert build_telegram_url("ABC123") == "https://api.telegram.org/botABC123/sendMessage"

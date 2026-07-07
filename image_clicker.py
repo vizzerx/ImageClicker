@@ -266,9 +266,11 @@ def sum_results(results: list) -> tuple[int, int]:
     return coins_sum, xp_sum
 
 
-def format_telegram_report(coins_sum: int, xp_sum: int, round_num: int) -> str:
-    """สร้างข้อความรายงานภาษาไทยสำหรับส่งเข้า Telegram"""
-    return (f"รายงานผลการเล่น\n"
+def format_telegram_report(coins_sum: int, xp_sum: int, round_num: int, prefix: str = "") -> str:
+    """สร้างข้อความรายงานภาษาไทยสำหรับส่งเข้า Telegram
+    prefix = คำนำหน้าที่ผู้ใช้ตั้งเอง (เช่น ชื่อเครื่อง) แยกบรรทัดแรก ใส่เมื่อไม่ว่างเท่านั้น"""
+    header = f"{prefix}\n" if prefix else ""
+    return (f"{header}รายงานผลการเล่น\n"
             f"รอบที่เล่นแล้ว: {round_num}\n"
             f"รวม Coins: {coins_sum:,}\n"
             f"รวม XP: {xp_sum:,}")
@@ -601,14 +603,6 @@ class App:
         return tk.Label(parent, text=text, bg=CARD, fg=fg, font=(self.ff, 10), **kw)
 
     def _build_ui(self):
-        # หัวเรื่อง
-        head = tk.Frame(self.root, bg=BG)
-        head.pack(fill="x", padx=18, pady=(14, 2))
-        tk.Label(head, text="Image Clicker", bg=BG, fg=TEXT,
-                 font=(self.ff, 20, "bold")).pack(side="left")
-        tk.Label(head, text="   เฝ้าหน้าจอแล้วคลิกรูปอัตโนมัติ ตามลำดับหรือกลุ่มยืดหยุ่น",
-                 bg=BG, fg=SUBTLE, font=(self.ff, 10)).pack(side="left", pady=(8, 0))
-
         # ----- ปุ่มเริ่ม (เต็มความกว้าง ด้านล่างสุด) -----
         footer = tk.Frame(self.root, bg=BG)
         footer.pack(side="bottom", fill="x", padx=18, pady=(2, 8))
@@ -818,6 +812,13 @@ class App:
         e_chat = tk.Entry(bcr, textvariable=self.var_bot_chat_id, width=22)
         e_chat.pack(side="right")
         e_chat.bind("<FocusOut>", lambda e: self.save_bot_config())
+
+        self.var_bot_prefix = tk.StringVar(value="")
+        bpr = tk.Frame(c2d, bg=CARD); bpr.pack(fill="x", padx=14, pady=2)
+        self._lbl(bpr, "คำนำหน้าข้อความ (เช่น ชื่อเครื่อง)", anchor="w").pack(side="left")
+        e_prefix = tk.Entry(bpr, textvariable=self.var_bot_prefix, width=22)
+        e_prefix.pack(side="right")
+        e_prefix.bind("<FocusOut>", lambda e: self.save_bot_config())
 
         self.var_bot_interval = tk.IntVar(value=30)
         bir = tk.Frame(c2d, bg=CARD); bir.pack(fill="x", padx=14, pady=(2, 8))
@@ -1399,6 +1400,7 @@ class App:
             self.var_bot_token.set(data.get("token", ""))
             self.var_bot_chat_id.set(data.get("chat_id", ""))
             self.var_bot_interval.set(data.get("interval_min", 30))
+            self.var_bot_prefix.set(data.get("prefix", ""))
         except Exception as e:
             self.log(f"โหลดค่า Telegram ไม่สำเร็จ: {e}")
 
@@ -1408,6 +1410,7 @@ class App:
             "token": self.var_bot_token.get(),
             "chat_id": self.var_bot_chat_id.get(),
             "interval_min": int(self.var_bot_interval.get()),
+            "prefix": self.var_bot_prefix.get(),
         }
         try:
             with open(BOT_CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -1437,7 +1440,9 @@ class App:
         self.save_bot_config()
 
         def worker():
-            ok, msg = self._send_telegram_message("ทดสอบการเชื่อมต่อจาก Image Clicker")
+            prefix = self.var_bot_prefix.get().strip()
+            test_text = f"{prefix}\nทดสอบการเชื่อมต่อจาก Image Clicker" if prefix else "ทดสอบการเชื่อมต่อจาก Image Clicker"
+            ok, msg = self._send_telegram_message(test_text)
             self.root.after(0, lambda: self.lbl_bot_status.config(
                 text=msg, fg=(GREEN if ok else DANGER)))
             self.root.after(0, lambda: self.log(f"Telegram ทดสอบ: {msg}"))
@@ -1469,7 +1474,8 @@ class App:
             if not self.running or stop_flag.is_set():
                 return
             coins_sum, xp_sum = sum_results(list(self.results))
-            text = format_telegram_report(coins_sum, xp_sum, self.round_num)
+            prefix = self.var_bot_prefix.get().strip()
+            text = format_telegram_report(coins_sum, xp_sum, self.round_num, prefix)
             ok, msg = self._send_telegram_message(text)
             self.root.after(0, lambda ok=ok, msg=msg: self.lbl_bot_status.config(
                 text=msg, fg=(GREEN if ok else DANGER)))
