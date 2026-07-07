@@ -9,3 +9,6 @@ scratch/
 results/
 bot_config.json
 version_info.txt
+MyCoin.json
+MyCoin_Multi.json
+RunCoin.json
