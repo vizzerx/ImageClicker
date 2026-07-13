@@ -650,6 +650,11 @@ class App:
                    width=150, height=36, font=(self.ff, 10, "bold")).pack(side="left")
         PillButton(act1, "เพิ่มจากไฟล์", self.add_image, "secondary",
                    width=130, height=36, font=(self.ff, 10, "bold")).pack(side="left", padx=6)
+        PillButton(act1, "จับตำแหน่งตายตัว", self.capture_position, "secondary",
+                   width=150, height=36, font=(self.ff, 10, "bold")).pack(side="left", padx=6)
+        tk.Label(c1, text="ขั้น 'ตำแหน่งตายตัว' จะคลิกที่พิกัดเดิมเสมอ ไม่ต้องจับคู่รูป\n"
+                 "เหมาะกับปุ่มที่ตำแหน่งคงที่แต่เนื้อหาเปลี่ยน เช่น ปุ่มตัวเลข",
+                 bg=CARD, fg=SUBTLE, font=(self.ff, 9), justify="left").pack(anchor="w", padx=16, pady=(0, 4))
         act2 = tk.Frame(c1, bg=CARD); act2.pack(fill="x", padx=16, pady=(0, 6))
         PillButton(act2, "สลับ ลำดับ/ยืดหยุ่น", self.toggle_flex, "secondary",
                    width=170, height=36, font=(self.ff, 10, "bold")).pack(side="left")
@@ -907,6 +912,9 @@ class App:
     def _step_opts_str(self, s):
         """สรุปคุณสมบัติเดี่ยวของขั้น แสดงในคอลัมน์ 'ตัวเลือกเพิ่ม' (ค่าว่าง=ใช้ค่ารวม)"""
         tags = []
+        if s.get("type") == "position" and s.get("pos"):
+            x, y = s["pos"][0], s["pos"][1]
+            tags.append(f"ที่ ({x},{y})")
         if s.get("retries") is not None:
             tags.append(f"ลองใหม่ {s['retries']}")
         if s.get("gap") is not None:
@@ -926,8 +934,9 @@ class App:
         for i, s in enumerate(self.steps):
             mode = "ยืดหยุ่น ★" if s.get("flexible") else "ลำดับ"
             opts = self._step_opts_str(s)
+            kind = "[ตำแหน่ง] " if s.get("type") == "position" else ""
             self.tree.insert("", "end", iid=str(i),
-                             text=f"  {i+1}.  {s['name']}",
+                             text=f"  {i+1}.  {kind}{s['name']}",
                              values=(s["clicks"], mode, opts))
         if keep is not None and 0 <= keep < len(self.steps):
             self.tree.selection_set(str(keep))
@@ -979,6 +988,28 @@ class App:
         self.refresh_list()
         self.log(f"จับภาพเป็นขั้น: {name}")
 
+    def capture_position(self):
+        """เพิ่มขั้น 'ตำแหน่งตายตัว' — ลากครอบพื้นที่เพื่อบันทึกพิกัดจอ (ไม่จับภาพ)
+        ตอนทำงานจะคลิกที่พิกัดนี้เสมอ โดยไม่ตรวจสอบว่ามีรูปตรงกันหรือไม่
+        เหมาะกับปุ่มที่ตำแหน่งคงที่แต่เนื้อหาบนปุ่มเปลี่ยนไปมา (เช่น ตัวเลข)"""
+        if pyautogui is None:
+            return
+        self.root.withdraw(); self.root.update(); time.sleep(0.3)
+        region = RegionSelector(self.root).select()
+        self.root.deiconify()
+        if not region:
+            return
+        l, t, w, h = region
+        cx, cy = l + w // 2, t + h // 2
+        name = simpledialog.askstring("ตั้งชื่อขั้น", "ตั้งชื่อขั้นนี้ (ตำแหน่งตายตัว):",
+                                      initialvalue=f"ตำแหน่ง {len(self.steps)+1}") or f"ตำแหน่ง {len(self.steps)+1}"
+        st = self._new_step(name)
+        st["type"] = "position"
+        st["pos"] = (cx, cy, w, h)
+        self.steps.append(st)
+        self.refresh_list()
+        self.log(f"เพิ่มขั้นตำแหน่งตายตัว: {name} ที่ ({cx},{cy})")
+
     def remove_image(self):
         i = self._sel()
         if i is None:
@@ -1020,6 +1051,7 @@ class App:
         """สร้าง dict ขั้นใหม่พร้อมค่าเริ่มต้น — retries/gap/timeout = None (ใช้ค่ารวม)"""
         return {
             "name": name,
+            "type": "image",       # "image" = จับคู่รูป (เดิม) / "position" = คลิกพิกัดตายตัวเสมอ
             "clicks": int(self.var_clicks.get()),
             "flexible": False,
             "retries": None,        # None = ใช้ค่ารวม (step_retries)
@@ -1028,6 +1060,8 @@ class App:
             "cooldown": None,      # None = ใช้ค่ารวม (step_cd)
             "require_prev": False,
             "capture_result": False,
+            "img": None,
+            "pos": None,            # (x, y, w, h) พิกัดจอ — ใช้เมื่อ type == "position"
         }
 
     def _parse_opt(self, var):
@@ -1296,13 +1330,16 @@ class App:
             },
             "steps": [{"name": s["name"], "clicks": s["clicks"],
                        "flexible": bool(s.get("flexible")),
+                       "type": s.get("type", "image"),
+                       "pos": list(s["pos"]) if s.get("pos") else None,
                        "retries": s.get("retries"),        # None = ใช้ค่ารวม
                        "gap": s.get("gap"),                # None = ใช้ค่ารวม
                        "timeout": s.get("timeout"),        # None = ใช้ค่ารวม
                        "cooldown": s.get("cooldown"),      # None = ใช้ค่ารวม
                        "require_prev": bool(s.get("require_prev", False)),
                        "capture_result": bool(s.get("capture_result", False)),
-                       "image_b64": img_to_b64(s["img"])} for s in self.steps],
+                       "image_b64": img_to_b64(s["img"]) if s.get("img") is not None else None}
+                      for s in self.steps],
         }
 
     def save_preset(self, path):
@@ -1368,20 +1405,27 @@ class App:
 
             self.steps = []
             for s in data.get("steps", []):
-                img = b64_to_img(s["image_b64"])
-                if img is not None:
-                    self.steps.append({
-                        "name": s.get("name", "ขั้น"),
-                        "clicks": int(s.get("clicks", 1)),
-                        "flexible": bool(s.get("flexible", False)),
-                        "retries": s.get("retries"),            # None = ใช้ค่ารวม
-                        "gap": s.get("gap"),                    # None = ใช้ค่ารวม
-                        "timeout": s.get("timeout"),            # None = ใช้ค่ารวม
-                        "cooldown": s.get("cooldown"),          # None = ใช้ค่ารวม
-                        "require_prev": bool(s.get("require_prev", False)),
-                        "capture_result": bool(s.get("capture_result", False)),
-                        "img": img,
-                    })
+                stype = s.get("type", "image")
+                img = b64_to_img(s["image_b64"]) if s.get("image_b64") else None
+                pos = tuple(s["pos"]) if s.get("pos") else None
+                if stype == "image" and img is None:
+                    continue   # ขั้นรูปภาพที่ข้อมูลรูปหาย -> ข้าม
+                if stype == "position" and pos is None:
+                    continue   # ขั้นตำแหน่งที่ไม่มีพิกัด -> ข้าม
+                self.steps.append({
+                    "name": s.get("name", "ขั้น"),
+                    "type": stype,
+                    "clicks": int(s.get("clicks", 1)),
+                    "flexible": bool(s.get("flexible", False)),
+                    "retries": s.get("retries"),            # None = ใช้ค่ารวม
+                    "gap": s.get("gap"),                    # None = ใช้ค่ารวม
+                    "timeout": s.get("timeout"),            # None = ใช้ค่ารวม
+                    "cooldown": s.get("cooldown"),          # None = ใช้ค่ารวม
+                    "require_prev": bool(s.get("require_prev", False)),
+                    "capture_result": bool(s.get("capture_result", False)),
+                    "img": img,
+                    "pos": pos,
+                })
             self.refresh_list()
             if not silent:
                 self.log(f"เปิดพรีเซ็ต: {os.path.basename(path)}  ({len(self.steps)} ขั้น)")
@@ -1648,11 +1692,11 @@ class App:
             self.log(f"กำลังหา {label}")
             t0 = time.time()
             while self.running:
-                m = find_matches(grab_screen(c["region"]), step["img"], c["conf"], c["scales"])
+                m = self._find_step_matches(step, c)
                 if m:
                     if step.get("capture_result") and c.get("save_results"):
                         self._capture_result()
-                    x, y = self._target_point(m[0], offx, offy)
+                    x, y = self._resolve_click_point(step, m[0], offx, offy)
                     self._do_click(x, y, step["clicks"])
                     self.log(f"ขั้น {num+1} คลิกที่ ({x},{y}) x{step['clicks']}")
                     self.last_done[num] = time.time()   # บันทึกเวลาสำเร็จ (สำหรับ cooldown)
@@ -1683,11 +1727,11 @@ class App:
         while self.running and pending:
             clicked = False
             for k in list(pending):     # ไล่ตามความสำคัญ คลิกตัวแรกที่เจอ
-                m = find_matches(grab_screen(c["region"]), steps[k]["img"], c["conf"], c["scales"])
+                m = self._find_step_matches(steps[k], c)
                 if m:
                     if steps[k].get("capture_result") and c.get("save_results"):
                         self._capture_result()
-                    x, y = self._target_point(m[0], offx, offy)
+                    x, y = self._resolve_click_point(steps[k], m[0], offx, offy)
                     self._do_click(x, y, steps[k]["clicks"])
                     gap = self._step_val(steps[k], "gap", c["gap"])   # หน่วงตามขั้นนั้น
                     self.log(f"  -> เจอ '{steps[k]['name']}' คลิกที่ ({x},{y}) x{steps[k]['clicks']}")
@@ -1711,8 +1755,8 @@ class App:
             hits = []
             screen = grab_screen(c["region"])
             for step in c["steps"]:
-                for match in find_matches(screen, step["img"], c["conf"], c["scales"]):
-                    x, y = self._target_point(match, offx, offy)
+                for match in self._find_step_matches(step, c, screen=screen):
+                    x, y = self._resolve_click_point(step, match, offx, offy)
                     hits.append((x, y, step["clicks"]))
             if hits:
                 if not c["click_all"]:
@@ -1733,6 +1777,29 @@ class App:
             return False
         return any(abs(px-x) <= tol and abs(py-y) <= tol and (now-pt) < cooldown
                    for (px, py, pt) in self.recent_clicks)
+
+    def _find_step_matches(self, step, c, screen=None):
+        """คืนรายการ match ของขั้น — ขั้น 'position' คืนพิกัดที่บันทึกไว้เสมอ (ไม่ตรวจจับภาพ)
+        ขั้น 'image' หาโดยจับคู่รูปตามปกติ (ใช้ screen ที่ส่งมาถ้ามี กันจับภาพจอซ้ำ)"""
+        if step.get("type") == "position":
+            pos = step.get("pos")
+            return [pos] if pos else []
+        scr = screen if screen is not None else grab_screen(c["region"])
+        return find_matches(scr, step["img"], c["conf"], c["scales"])
+
+    def _resolve_click_point(self, step, match, offx, offy):
+        """แปลง match เป็นพิกัดคลิกจริง — ขั้น 'position' ใช้พิกัดจอตรง ๆ (ไม่บวก offset ของพื้นที่สแกน
+        เพราะบันทึกมาจากพิกัดจอเต็มอยู่แล้ว) ขั้น 'image' บวก offset ของพื้นที่สแกนตามปกติ"""
+        if step.get("type") == "position":
+            return self._target_point_absolute(match)
+        return self._target_point(match, offx, offy)
+
+    def _target_point_absolute(self, match):
+        """คืนพิกัดคลิกสำหรับขั้นตำแหน่งตายตัว — คลิกที่จุดที่บันทึกไว้เป๊ะ ๆ เสมอ
+        (ไม่สุ่มตำแหน่งแม้เปิดตัวเลือก 'สุ่มตำแหน่งคลิก' เพราะจุดประสงค์ของขั้นนี้คือความแม่นยำ
+        ถ้าสุ่มตามขนาดกรอบที่ลาก ผู้ใช้ที่ลากกรอบกว้าง ๆ จะโดนคลิกไกลจากปุ่มจริงได้)"""
+        cx, cy, _w, _h = match
+        return cx, cy
 
     def _target_point(self, match, offx, offy):
         """คืนพิกัดที่จะคลิก ถ้าเปิดสุ่ม จะสุ่มจุดภายในกรอบรูป (ไม่คลิกกึ่งกลางเป๊ะ)"""

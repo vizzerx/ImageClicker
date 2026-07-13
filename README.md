@@ -19,6 +19,7 @@ You capture snippets of your screen (a button, a popup, a result screen), and Im
 
 - **Sequence mode** — click steps in order, with "flexible groups" for popups that can appear in any order
 - **Scan-all mode** — click every match found on each pass
+- **Fixed-position steps** — click a saved screen coordinate directly, no image matching. Useful for buttons whose location never moves but whose content does (e.g. a number that changes each round)
 - **OCR results tracking** *(optional)* — reads Coins/XP off a result screen after each round, logs Round / Time / Elapsed to a table + CSV
 - **Auto-stop timer** — stop after N hours or at a specific clock time, with a live countdown, plus a calculator that estimates total runtime from your average round time
 - **Telegram reports** *(optional)* — periodic Coins/XP summaries sent to a Telegram bot, tagged with a per-host prefix if you run it on multiple machines
@@ -36,7 +37,7 @@ Only needed if you want the OCR results-tracking feature: install [Tesseract-OCR
 
 ## How to use
 
-1. Click **"จับภาพจากจอ"** (capture from screen) and drag a box around a button/image you want it to watch for — that becomes a step
+1. Click **"จับภาพจากจอ"** (capture from screen) and drag a box around a button/image you want it to watch for — that becomes a step. Or click **"จับตำแหน่งตายตัว"** (capture fixed position) to add a step that always clicks the same screen coordinate instead of matching an image — handy for buttons that stay put but change content
 2. Reorder steps with ▲ / ▼, or mark one as "flexible" if it can appear in any order (e.g. a random popup)
 3. Pick a mode: **sequence** (with flexible groups) or **scan-all**
 4. Adjust settings if needed — matching accuracy, scan interval, click delay, etc.

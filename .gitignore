@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 build/
 dist/
+release/
 .DS_Store
 scratch/
 .claude/
@@ -12,3 +13,5 @@ version_info.txt
 MyCoin.json
 MyCoin_Multi.json
 RunCoin.json
+Coin_Double_Delay_with_result_v2.json
+Gift_Open.json
